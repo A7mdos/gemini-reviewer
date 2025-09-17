@@ -101,7 +101,7 @@ function determineCommitType(diffs: { file: string; diff: string }[]): string {
       for (const keyword of keywords) {
         if (lowerDiff.includes(keyword)) {
           if (type in typeCounts) {
-            typeCounts[type]++;
+             typeCounts[type]++;
           }
         }
       }
