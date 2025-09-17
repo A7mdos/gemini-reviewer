@@ -1,6 +1,8 @@
 import { tool } from "ai";
 import { simpleGit } from "simple-git";
 import { z } from "zod";
+import fs from "fs/promises";
+import path from "path";
 
 const excludeFiles = ["dist", "bun.lock"];
 
@@ -165,4 +167,192 @@ export const generateCommitMessageTool = tool({
   description: "Generates a commit message based on the changes in the given directory",
   inputSchema: commitMessageSchema,
   execute: generateCommitMessage,
+});
+
+// Schema for the markdown file generation tool
+const markdownFileSchema = z.object({
+  rootDir: z.string().min(1).describe("The root directory"),
+  outputPath: z.string().min(1).describe("The path where the markdown file will be saved"),
+  title: z.string().optional().describe("The title of the markdown file"),
+  includeChanges: z.boolean().optional().describe("Whether to include file changes in the markdown"),
+  includeCommitMessage: z.boolean().optional().describe("Whether to include a generated commit message"),
+  includeReview: z.boolean().optional().describe("Whether to include an AI-generated code review"),
+  reviewComments: z.string().optional().describe("Custom review comments to include in the markdown file"),
+});
+
+type MarkdownFileInput = z.infer<typeof markdownFileSchema>;
+
+/**
+ * Analyzes file changes and generates basic review comments
+ * @param diffs - Array of file changes with diffs
+ * @returns Generated review comments
+ */
+function generateBasicReview(diffs: { file: string; diff: string }[]): string {
+  if (diffs.length === 0) {
+    return "No changes to review.";
+  }
+  
+  const fileCount = diffs.length;
+  const fileTypes = new Set(diffs.map(d => d.file.split('.').pop()));
+  
+  let totalAdditions = 0;
+  let totalDeletions = 0;
+  
+  diffs.forEach(({ diff }) => {
+    const addedLines = diff.split('\n').filter(line => line.startsWith('+')).length - 1;
+    const removedLines = diff.split('\n').filter(line => line.startsWith('-')).length - 1;
+    totalAdditions += addedLines;
+    totalDeletions += removedLines;
+  });
+  
+  const fileAnalysis = diffs.map(({ file, diff }) => {
+    const addedLines = diff.split('\n').filter(line => line.startsWith('+')).length - 1;
+    const removedLines = diff.split('\n').filter(line => line.startsWith('-')).length - 1;
+    const netChange = addedLines - removedLines;
+    
+    let complexity = "low";
+    if (diff.length > 1000) complexity = "high";
+    else if (diff.length > 300) complexity = "medium";
+    
+    return `### ${file}
+- Lines added: ${addedLines}
+- Lines removed: ${removedLines}
+- Net change: ${netChange > 0 ? '+' + netChange : netChange}
+- Complexity: ${complexity}
+`;
+  }).join('\n');
+  
+  return `## Summary
+
+This review covers ${fileCount} file${fileCount !== 1 ? 's' : ''} across ${fileTypes.size} file type${fileTypes.size !== 1 ? 's' : ''}.
+- Total additions: ${totalAdditions}
+- Total deletions: ${totalDeletions}
+- Net change: ${totalAdditions - totalDeletions > 0 ? '+' + (totalAdditions - totalDeletions) : (totalAdditions - totalDeletions)}
+
+## File Analysis
+
+${fileAnalysis}`;
+}
+
+/**
+ * Generates a markdown file with code review results and optionally includes file changes and commit message
+ * @param options - The options for generating the markdown file
+ * @returns Object containing the path to the generated file and status message
+ */
+async function generateMarkdownFile({ 
+  rootDir, 
+  outputPath, 
+  title = "Code Review Results", 
+  includeChanges = true, 
+  includeCommitMessage = true,
+  includeReview = false,
+  reviewComments = ""
+}: MarkdownFileInput) {
+  try {
+    // Ensure the output directory exists
+    // Handle relative paths by resolving them against the current working directory
+    const resolvedOutputPath = path.resolve(process.cwd(), outputPath);
+    const outputDir = path.dirname(resolvedOutputPath);
+    
+    try {
+      await fs.mkdir(outputDir, { recursive: true });
+    } catch (dirError) {
+      console.error(`Error creating directory ${outputDir}:`, dirError);
+      return {
+        status: "error",
+        message: `Failed to create directory for ${resolvedOutputPath}. Please check if the path is valid and you have write permissions.`,
+        timestamp: new Date().toISOString()
+      };
+    }
+    
+    // Get file changes
+    const diffs = await getFileChangesInDirectory({ rootDir });
+    
+    // Check if there are any changes to process
+    if (diffs.length === 0) {
+      return {
+        status: "warning",
+        message: `No changes detected in ${rootDir}. Make sure you have uncommitted changes and the directory exists.`,
+        timestamp: new Date().toISOString()
+      };
+    }
+    
+    // Generate commit message if requested
+    let commitMessageSection = "";
+    if (includeCommitMessage) {
+      const { commitMessage, details } = await generateCommitMessage({ rootDir });
+      commitMessageSection = `
+## Commit Message
+
+\`\`\`
+${commitMessage}
+\`\`\`
+
+### Details
+
+\`\`\`
+${details}
+\`\`\`
+`;
+    }
+    
+    // Generate changes section if requested
+    let changesSection = "";
+    if (includeChanges) {
+      changesSection = `
+## File Changes
+
+${diffs.map(({ file, diff }) => {
+        return `### ${file}
+
+\`\`\`diff
+${diff}
+\`\`\`
+`;
+      }).join('\n')}
+`;
+    }
+    
+    // Generate review section if requested
+    let reviewSection = "";
+    if (includeReview) {
+      // If no review comments are provided, generate basic review
+      const reviewContent = reviewComments || generateBasicReview(diffs);
+      reviewSection = `
+## Code Review
+
+${reviewContent}
+`;
+    }
+
+    // Generate the markdown content
+    const timestamp = new Date().toISOString();
+    const markdown = `# ${title}
+
+*Generated on: ${timestamp}*
+
+${reviewSection}${commitMessageSection}${changesSection}`;
+    
+    // Write the markdown file
+    await fs.writeFile(resolvedOutputPath, markdown, 'utf-8');
+    
+    return {
+      filePath: outputPath,
+      status: "success",
+      message: `Markdown file successfully generated at ${outputPath}`,
+      timestamp
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      message: `Failed to generate markdown file: ${error instanceof Error ? error.message : String(error)}`,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+export const generateMarkdownFileTool = tool({
+  description: "Generates a markdown file with code review results and optionally includes file changes and commit message",
+  inputSchema: markdownFileSchema,
+  execute: generateMarkdownFile,
 });
