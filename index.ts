@@ -1,7 +1,7 @@
 import { stepCountIs, streamText } from "ai";
 import { google } from "@ai-sdk/google";
 import { SYSTEM_PROMPT } from "./prompts";
-import { getFileChangesInDirectoryTool } from "./tools";
+import { getFileChangesInDirectoryTool, generateCommitMessageTool } from "./tools";
 
 const codeReviewAgent = async (prompt: string) => {
   const result = streamText({
@@ -9,7 +9,8 @@ const codeReviewAgent = async (prompt: string) => {
     prompt,
     system: SYSTEM_PROMPT,
     tools: {
-      getFileChangesInDirectoryTool: getFileChangesInDirectoryTool,
+      getFileChangesInDirectoryTool,
+      generateCommitMessageTool,
     },
     stopWhen: stepCountIs(10),
   });
@@ -19,7 +20,17 @@ const codeReviewAgent = async (prompt: string) => {
   }
 };
 
-// Specify which directory the code review agent should review changes in your prompt
+// Example usage of the code review agent
+// await codeReviewAgent(
+//   "Review the code changes in '../gemini-reviewer' directory, make your reviews and suggestions file by file"
+// );
+
+// Example usage with commit message generation
 await codeReviewAgent(
-  "Review the code changes in '../gemini-reviewer' directory, make your reviews and suggestions file by file"
+  "Generate a commit message for the changes in '../gemini-reviewer' directory"
 );
+
+// Example usage with specific commit type and scope
+// await codeReviewAgent(
+//   "Generate a commit message for the changes in '../gemini-reviewer' directory with type 'feat' and scope 'tools'"
+// );
